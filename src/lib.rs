@@ -266,12 +266,7 @@ impl<T: ?Sized> SlimBox<T> {
 #[macro_export]
 macro_rules! slimbox_unsize {
     ($expression:expr) => {{
-        let val = $expression;
-        // inference assuming this expression is known to be a SlimBox<T>: `ptr`
-        // is a *const T and the first conversion from a &_ must be to its
-        // *const
-        let ptr = &val as &_ as *const _;
-        unsafe { $crate::SlimBox::from_unsize_and_ptr(val, ptr) }
+        $crate::slimbox_unsize!(_, $expression)
     }};
     ($T:ty, $expression:expr) => {{
         let val = $expression;
