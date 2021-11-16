@@ -115,6 +115,11 @@ impl<T: ?Sized> InnerPtr<T> {
     }
 }
 
+/// A thin owned pointer; like [`Box<T>`] but guaranteed to be as big as a
+/// regular pointer, even for `!Sized` types.
+///
+/// Internally this points to a single allocation that contains a (potentially)
+/// wide pointer, and the value itself.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SlimBox<T: ?Sized> {
@@ -123,49 +128,69 @@ pub struct SlimBox<T: ?Sized> {
 }
 
 impl<T: ?Sized> SlimBox<T> {
+    /// Moves `value` in a new `SlimBox<T>`. `T` must be `Sized` to use this.
     pub fn new(value: T) -> Self
     where
         T: Sized,
     {
-        let this = &value as &T as *const T as *mut Inner<T>;
+        let fake_this = &value as &T as *const T as *mut Inner<T>;
 
-        let mut boxed = Box::new(Inner { this, value });
-        boxed.this = &*boxed as *const Inner<T> as *mut Inner<T>;
+        let boxed = Box::into_raw(Box::new(Inner {
+            this: fake_this,
+            value,
+        }));
+        unsafe { (*boxed).this = boxed };
 
         Self {
-            inner_box: InnerPtr(NonNull::new(Box::into_raw(boxed)).unwrap().cast()),
+            inner_box: InnerPtr(NonNull::new(boxed).unwrap().cast()),
             _phantom: PhantomData,
         }
     }
 
+    /// Moves `value` in a new `SlimBox<T>`. `value` must be of a type that can
+    /// be [unsized][Unsize] as `T`; i.e. you can use this to `SlimBox` a value
+    /// of a type that implements a trait `Trait` into a `SlimBox<dyn Trait>`.
     #[cfg(feature = "unsize")]
     pub fn from_unsize<S: Unsize<T>>(value: S) -> Self {
-        let this = &value as &T as *const T as *mut Inner<T>;
+        let fake_this = &value as &T as *const T as *mut Inner<T>;
 
-        let mut boxed = Box::new(Inner { this, value });
-        boxed.this = &*boxed as *const Inner<T> as *mut Inner<T>;
+        let boxed = Box::into_raw(Box::new(Inner {
+            this: fake_this,
+            value,
+        }));
+        unsafe { (*boxed).this = boxed as *mut Inner<T> };
 
         Self {
-            inner_box: InnerPtr(NonNull::new(Box::into_raw(boxed)).unwrap().cast()),
+            inner_box: InnerPtr(NonNull::new(boxed).unwrap().cast()),
             _phantom: PhantomData,
         }
     }
 
+    /// Unsizes `value` into a `SlimBox<T>` given the value and a (potentially)
+    /// wide pointer with the correct metadata for it. Used by the
+    /// [`slimbox_unsize`] macro.
+    ///
     /// # Safety
     ///
-    /// The metadata in `ptr` must be valid metadata for a pointer to `value` as T.
+    /// The metadata in `ptr` must be valid metadata for a pointer to `value` as
+    /// T.
     pub unsafe fn from_unsize_and_ptr<S>(value: S, ptr: *const T) -> Self {
-        let this = ptr as *mut Inner<T>;
+        let fake_this = ptr as *mut Inner<T>;
 
-        let mut boxed = Box::new(Inner::<T, S> { this, value });
-        boxed.this = set_ptr_value(this, &*boxed as *const Inner<T, S> as *mut u8);
+        let boxed = Box::into_raw(Box::new(Inner {
+            this: fake_this,
+            value,
+        }));
+        (*boxed).this = set_ptr_value(fake_this, boxed as *mut u8);
 
         Self {
-            inner_box: InnerPtr(NonNull::new(Box::into_raw(boxed)).unwrap().cast()),
+            inner_box: InnerPtr(NonNull::new(boxed).unwrap().cast()),
             _phantom: PhantomData,
         }
     }
 
+    /// Moves the value contained in `boxed` into a `SlimBox`. This function
+    /// makes a new allocation.
     pub fn from_box(boxed: Box<T>) -> Self {
         // we manually build the Layout for an Inner<T> that can hold the
         // currently boxed value
@@ -176,24 +201,24 @@ impl<T: ?Sized> SlimBox<T> {
 
         let inner_storage = alloc(inner_layout);
 
-        let value_storage = Box::into_raw(boxed);
+        let boxed = Box::into_raw(boxed);
 
         // SAFETY: we're initializing the newly-allocated Inner<T> that lives at
         // inner_storage, copying metadata and moving the value in value_storage
         unsafe {
             ptr::write(
                 inner_storage.cast(),
-                set_ptr_value(value_storage, inner_storage) as *mut Inner<T>,
+                set_ptr_value(boxed, inner_storage) as *mut Inner<T>,
             );
             ptr::copy_nonoverlapping(
-                value_storage.cast(),
+                boxed.cast(),
                 inner_storage.add(value_offset),
                 value_layout.size(),
             );
         }
 
         // SAFETY: value_storage is an allocated T that we moved from
-        unsafe { dealloc(value_storage.cast(), value_layout) };
+        unsafe { dealloc(boxed.cast(), value_layout) };
 
         Self {
             inner_box: InnerPtr(NonNull::new(inner_storage).unwrap().cast()),
@@ -201,20 +226,26 @@ impl<T: ?Sized> SlimBox<T> {
         }
     }
 
-    fn inner_ref(&self) -> &Inner<T> {
-        unsafe { self.inner_box.as_ref() }
+    /// Returns a `*mut c_void` pointing to the internal allocation, which can
+    /// be conveniently passed over FFI boundaries and used later with
+    /// [`SlimRef::from_raw`] or [`SlimMut::from_raw`].
+    pub fn as_raw(&self) -> *mut c_void {
+        self.inner_box.0.as_ptr() as _
     }
 
-    fn inner_mut(&mut self) -> &mut Inner<T> {
-        unsafe { self.inner_box.as_mut() }
-    }
-
+    /// Consumes the box and returns a `*mut c_void` pointing to its internal
+    /// allocation, which can be conveniently passed over FFI boundaries and
+    /// used later with [`from_raw`][Self::from_raw], [`SlimRef::from_raw`] or
+    /// [`SlimMut::from_raw`].
     pub fn into_raw(self) -> *mut c_void {
-        let pointer = self.inner_box.0.as_ptr() as _;
+        let pointer = self.as_raw();
         mem::forget(self);
         pointer
     }
 
+    /// Reconstructs a `SlimBox` out of a `*mut c_void` that's pointing to an
+    /// internal allocation of the correct type.
+    ///
     /// # Safety
     ///
     /// `pointer` must be an owned pointer to the inner value of a [`SlimBox`],
@@ -227,6 +258,11 @@ impl<T: ?Sized> SlimBox<T> {
     }
 }
 
+/// Unsizes an expression into a [`SlimBox<T>`]; has two forms:
+/// - `slimbox_unsize(expression)`, which will try to infer the type of the
+///   resulting `SlimBox`
+/// - `slimbox_unsize(T, expression)`, which will unsize `expression` into a
+///   `SlimBox<T>`
 #[macro_export]
 macro_rules! slimbox_unsize {
     ($expression:expr) => {{
@@ -254,13 +290,13 @@ impl<T: ?Sized> Deref for SlimBox<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        &self.inner_ref().value
+        &unsafe { self.inner_box.as_ref() }.value
     }
 }
 
 impl<T: ?Sized> DerefMut for SlimBox<T> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut self.inner_mut().value
+        &mut unsafe { self.inner_box.as_mut() }.value
     }
 }
 
@@ -268,6 +304,11 @@ impl<T: ?Sized> DerefMut for SlimBox<T> {
 unsafe impl<T: ?Sized + Send> Send for SlimBox<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for SlimBox<T> {}
 
+/// A thin shared reference; like `&T` but guaranteed to be as big as a regular
+/// pointer, even for `!Sized` types. It will typically refer to a value owned
+/// by a [`SlimBox`].
+///
+/// [reference]: https://doc.rust-lang.org/std/primitive.reference.html
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SlimRef<'a, T: ?Sized> {
@@ -284,19 +325,21 @@ impl<T: ?Sized> Clone for SlimRef<'_, T> {
 }
 
 impl<T: ?Sized> SlimRef<'_, T> {
-    fn inner_ref(&self) -> &Inner<T> {
-        unsafe { self.inner_ref.as_ref() }
-    }
-
+    /// Returns a `*const c_void` pointing to the internal allocation, which can
+    /// be conveniently passed over FFI boundaries and used later with
+    /// [`from_raw`][Self::from_raw].
     pub fn as_raw(self) -> *const c_void {
         self.inner_ref.0.as_ptr() as _
     }
 
+    /// Reconstructs a `SlimRef` out of a `*const c_void` that's pointing to an
+    /// internal allocation of the correct type.
+    ///
     /// # Safety
     ///
     /// `pointer` must be a shared pointer to the inner value of a [`SlimBox`],
-    /// like the one returned by [`as_raw`][Self::as_raw], [`SlimBox::into_raw`]
-    /// or [`SlimMut::as_raw`].
+    /// like the one returned by [`as_raw`][Self::as_raw],
+    /// [`SlimBox::into_raw`], [`SlimBox::as_raw`], or [`SlimMut::as_raw`].
     pub unsafe fn from_raw(pointer: *const c_void) -> Self {
         Self {
             inner_ref: InnerPtr(NonNull::new_unchecked(pointer as *mut c_void).cast()),
@@ -309,7 +352,7 @@ impl<T: ?Sized> Deref for SlimRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        &self.inner_ref().value
+        &unsafe { self.inner_ref.as_ref() }.value
     }
 }
 
@@ -317,6 +360,9 @@ impl<T: ?Sized> Deref for SlimRef<'_, T> {
 unsafe impl<T: ?Sized + Sync> Send for SlimRef<'_, T> {}
 unsafe impl<T: ?Sized + Sync> Sync for SlimRef<'_, T> {}
 
+/// A thin exclusive reference; like `&mut T` but guaranteed to be as big as a
+/// regular pointer, even for `!Sized` types. It will typically refer to a value
+/// owned by a [`SlimBox`].
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SlimMut<'a, T: ?Sized> {
@@ -325,23 +371,21 @@ pub struct SlimMut<'a, T: ?Sized> {
 }
 
 impl<T: ?Sized> SlimMut<'_, T> {
-    fn inner_ref(&self) -> &Inner<T> {
-        unsafe { self.inner_mut.as_ref() }
-    }
-
-    fn inner_mut(&mut self) -> &mut Inner<T> {
-        unsafe { self.inner_mut.as_mut() }
-    }
-
+    /// Returns a `*mut c_void` pointing to the internal allocation, which can
+    /// be conveniently passed over FFI boundaries and used later with
+    /// [`from_raw`][Self::from_raw] or [`SlimRef::from_raw`].
     pub fn as_raw(self) -> *mut c_void {
         self.inner_mut.0.as_ptr() as _
     }
 
+    /// Reconstructs a `SlimMut` out of a `*mut c_void` that's pointing to an
+    /// internal allocation of the correct type.
+    ///
     /// # Safety
     ///
     /// `pointer` must be an exclusive pointer to the inner value of a
-    /// [`SlimBox`], like the one returned by [`as_raw`][Self::as_raw] or
-    /// [`SlimBox::into_raw`].
+    /// [`SlimBox`], like the one returned by [`as_raw`][Self::as_raw],
+    /// [`SlimBox::into_raw`], or [`SlimBox::as_raw`].
     pub unsafe fn from_raw(pointer: *mut c_void) -> Self {
         Self {
             inner_mut: InnerPtr(NonNull::new_unchecked(pointer).cast()),
@@ -354,13 +398,13 @@ impl<T: ?Sized> Deref for SlimMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        &self.inner_ref().value
+        &unsafe { self.inner_mut.as_ref() }.value
     }
 }
 
 impl<T: ?Sized> DerefMut for SlimMut<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut self.inner_mut().value
+        &mut unsafe { self.inner_mut.as_mut() }.value
     }
 }
 
@@ -368,10 +412,15 @@ impl<T: ?Sized> DerefMut for SlimMut<'_, T> {
 unsafe impl<T: ?Sized + Send> Send for SlimMut<'_, T> {}
 unsafe impl<T: ?Sized + Sync> Sync for SlimMut<'_, T> {}
 
+/// Trait for types that can be sharedly borrowed as a `SlimRef`.
 pub trait AsSlimRef<T: ?Sized> {
+    /// Returns a new `SlimRef` sharedly borrowing from `self`.
     fn as_slim_ref(&self) -> SlimRef<'_, T>;
 }
+
+/// Trait for types that can be exclusively borrowed as a `SlimMut`.
 pub trait AsSlimMut<T: ?Sized> {
+    /// Returns a new `SlimMut` exclusively borrowing from `self`.
     fn as_slim_mut(&mut self) -> SlimMut<'_, T>;
 }
 
