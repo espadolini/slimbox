@@ -28,12 +28,10 @@ fn set_ptr_value<T: ?Sized>(ptr: *mut T, val: *mut u8) -> *mut T {
     let thin = &mut new_ptr as *mut *mut T as *mut *mut u8;
 
     unsafe {
-        assert_eq!(*thin, ptr as *mut u8);
-
-        *thin = (ptr as *mut u8).wrapping_add(1);
+        thin.write((ptr as *mut u8).wrapping_add(1));
         assert_eq!(new_ptr as *mut u8, (ptr as *mut u8).wrapping_add(1));
 
-        *thin = val;
+        thin.write(val);
         assert_eq!(new_ptr as *mut u8, val);
     };
 
