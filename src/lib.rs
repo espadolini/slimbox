@@ -133,12 +133,18 @@ impl<T: ?Sized> SlimBox<T> {
     where
         T: Sized,
     {
-        let fake_this = &value as &T as *const T as *mut Inner<T>;
-
-        let boxed = Box::into_raw(Box::new(Inner {
-            this: fake_this,
+        let mut boxed = Box::into_raw(Box::new(Inner::<T> {
+            this: ptr::null_mut(),
             value,
         }));
+
+        // we do `Box::into_raw` immediately because we need a pointer with the
+        // correct validity; casting a reference (with `&mut *boxed as *mut _`)
+        // will give us a pointer that's only valid until that reference
+        // expires, and it seems like `addr_of_mut!(*boxed)` goes through Deref
+        // and thus is subject to the same restriction
+
+        // SAFETY: `boxed` is a pointer to the Inner<T> we just made
         unsafe { (*boxed).this = boxed };
 
         Self {
@@ -152,12 +158,12 @@ impl<T: ?Sized> SlimBox<T> {
     /// of a type that implements a trait `Trait` into a `SlimBox<dyn Trait>`.
     #[cfg(feature = "unsize")]
     pub fn from_unsize<S: Unsize<T>>(value: S) -> Self {
-        let fake_this = &value as &T as *const T as *mut Inner<T>;
-
         let boxed = Box::into_raw(Box::new(Inner {
-            this: fake_this,
+            this: ptr::null_mut::<S>() as *mut T as *mut Inner<T>,
             value,
         }));
+
+        // SAFETY: `boxed` is a pointer to the Inner<T, S> we just made
         unsafe { (*boxed).this = boxed as *mut Inner<T> };
 
         Self {
@@ -175,13 +181,11 @@ impl<T: ?Sized> SlimBox<T> {
     /// The metadata in `ptr` must be valid metadata for a pointer to `value` as
     /// T.
     pub unsafe fn from_unsize_and_ptr<S>(value: S, ptr: *const T) -> Self {
-        let fake_this = ptr as *mut Inner<T>;
-
         let boxed = Box::into_raw(Box::new(Inner {
-            this: fake_this,
+            this: ptr as *mut Inner<T>,
             value,
         }));
-        (*boxed).this = set_ptr_value(fake_this, boxed as *mut u8);
+        (*boxed).this = set_ptr_value(ptr as *mut Inner<T>, boxed as *mut u8);
 
         Self {
             inner_box: InnerPtr(NonNull::new(boxed).unwrap().cast()),
@@ -469,6 +473,21 @@ mod test {
     use super::*;
 
     use core::mem;
+
+    #[test]
+    fn sized() {
+        let mut foo = SlimBox::new(42u64);
+
+        assert_eq!(*foo, 42);
+
+        let foo_ref = foo.as_slim_ref();
+        assert_eq!(*foo_ref, 42);
+
+        let mut foo_mut = foo.as_slim_mut();
+        *foo_mut = 420;
+
+        assert_eq!(*foo, 420);
+    }
 
     #[test]
     fn slice() {
