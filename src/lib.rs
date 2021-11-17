@@ -486,7 +486,13 @@ mod test {
         let mut foo_mut = foo.as_slim_mut();
         *foo_mut = 420;
 
+        let foo_ref = foo.as_slim_ref();
+        let foo_ref2 = foo.as_slim_ref();
+
+        assert_eq!(*foo_ref, 420);
+
         assert_eq!(*foo, 420);
+        assert_eq!(*foo_ref2, 420);
     }
 
     #[test]
