@@ -24,12 +24,17 @@ fn set_ptr_value<T: ?Sized>(ptr: *mut T, val: *mut u8) -> *mut T {
     assert!(mem::size_of::<*mut T>() >= mem::size_of::<*mut u8>());
     assert!(mem::align_of::<*mut T>() == mem::align_of::<*mut u8>());
 
+    let fake_ptr_a = 1 as *mut u8;
+    let fake_ptr_b = 2 as *mut u8;
+
     let mut new_ptr = ptr;
     let thin = &mut new_ptr as *mut *mut T as *mut *mut u8;
 
     unsafe {
-        thin.write((ptr as *mut u8).wrapping_add(1));
-        assert_eq!(new_ptr as *mut u8, (ptr as *mut u8).wrapping_add(1));
+        thin.write(fake_ptr_a);
+        assert_eq!(new_ptr as *mut u8, fake_ptr_a);
+        thin.write(fake_ptr_b);
+        assert_eq!(new_ptr as *mut u8, fake_ptr_b);
 
         thin.write(val);
         assert_eq!(new_ptr as *mut u8, val);
