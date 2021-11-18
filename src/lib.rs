@@ -332,7 +332,7 @@ impl<T: ?Sized> SlimRef<'_, T> {
     /// Returns a `*const c_void` pointing to the internal allocation, which can
     /// be conveniently passed over FFI boundaries and used later with
     /// [`from_raw`][Self::from_raw].
-    pub fn as_raw(self) -> *const c_void {
+    pub fn as_raw(&self) -> *const c_void {
         self.inner_ref.0.as_ptr() as _
     }
 
@@ -378,7 +378,7 @@ impl<T: ?Sized> SlimMut<'_, T> {
     /// Returns a `*mut c_void` pointing to the internal allocation, which can
     /// be conveniently passed over FFI boundaries and used later with
     /// [`from_raw`][Self::from_raw] or [`SlimRef::from_raw`].
-    pub fn as_raw(self) -> *mut c_void {
+    pub fn as_raw(&self) -> *mut c_void {
         self.inner_mut.0.as_ptr() as _
     }
 
