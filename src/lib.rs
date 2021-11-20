@@ -1,3 +1,65 @@
+//! [`SlimBox`] is a thin pointer type for heap allocation; by storing metadata
+//! (currently, a full pointer) together with the value in the same allocation,
+//! it allows you to box a [DST] (i.e. a slice or a trait object) while only
+//! using one machine word's worth of space. Additionally, the [`SlimRef`] and
+//! [`SlimMut`] types provide the equivalent of shared and exclusive references
+//! to the contents of a `SlimBox`, while also being the size of a thin pointer.
+//!
+//! A convenient [`slimbox_unsize!`] macro is provided, to construct a
+//! `SlimBox<T>` from a value of type `S` that can be [unsized] to `T`. By
+//! enabling the `nightly` feature (requiring a nightly compiler) or the
+//! `unsafe_stable` feature, the [`SlimBox::from_box`] conversion function is
+//! also made available, to convert from a preexisting `Box<T>` into a
+//! `SlimBox<T>`.
+//!
+//! The use of the `unsafe_stable` feature does rely on something that could
+//! potentially become false in the future, leading to UB; namely, the fact that
+//! a fat pointer contains a thin pointer at offset 0. This does seem to be the
+//! case now, and it's probably going to stay like this in the future, but for
+//! additional peace of mind it is recommended to just construct the `SlimBox`
+//! out of the original `Sized` value in the first place.
+//!
+//! The three types are FFI-compatible and null-optimized, so you can declare
+//! `extern "C"` functions that deal in `SlimBox`, `SlimRef` and `SlimMut` or
+//! [`Option`]s of those while only declaring opaque pointers to the foreign
+//! side.
+//!
+//! ```
+//! # use slimbox::{slimbox_unsize, SlimBox, SlimRef};
+//! trait Frob {
+//!     fn foo(&self) -> i32;
+//! }
+//! # struct A(i32);
+//! # struct B(i32);
+//! # impl Frob for A { fn foo(&self) -> i32 { 0 } }
+//! # impl Frob for B { fn foo(&self) -> i32 { 0 } }
+//!
+//! // void *frob_new(int32_t p);
+//! #[no_mangle]
+//! extern "C" fn frob_new(p: i32) -> Option<SlimBox<dyn Frob>> {
+//!     if p == 0 {
+//!         None
+//!     } else if p % 2 == 0 {
+//!         Some(slimbox_unsize!(A(p / 2)))
+//!     } else {
+//!         Some(slimbox_unsize!(B(p)))
+//!     }
+//! }
+//!
+//! // int32_t frob_foo(const void *f);
+//! #[no_mangle]
+//! extern "C" fn frob_foo(f: SlimRef<'_, dyn Frob>) -> i32 {
+//!     f.foo()
+//! }
+//!
+//! // void frob_free(void *f);
+//! #[no_mangle]
+//! extern "C" fn frob_free(f: Option<SlimBox<dyn Frob>>) {}
+//! ```
+//!
+//! [DST]: https://doc.rust-lang.org/reference/dynamically-sized-types.html
+//! [unsized]: core::marker::Unsize
+
 #![cfg_attr(feature = "nightly", feature(set_ptr_value))]
 #![no_std]
 extern crate alloc;
@@ -292,8 +354,6 @@ unsafe impl<T: ?Sized + Sync> Sync for SlimBox<T> {}
 /// A thin shared reference; like `&T` but guaranteed to be as big as a regular
 /// pointer, even for `!Sized` types. It will typically refer to a value owned
 /// by a [`SlimBox`].
-///
-/// [reference]: https://doc.rust-lang.org/std/primitive.reference.html
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SlimRef<'a, T: ?Sized> {
