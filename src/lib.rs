@@ -61,7 +61,7 @@
 //! [unsized]: core::marker::Unsize
 
 #![cfg_attr(feature = "nightly", feature(set_ptr_value))]
-#![cfg_attr(all(doc, feature = "nightly"), feature(doc_cfg))]
+#![cfg_attr(doc, feature(doc_cfg))]
 #![no_std]
 extern crate alloc;
 
@@ -251,10 +251,7 @@ impl<T: ?Sized> SlimBox<T> {
     /// Moves the value contained in `boxed` into a `SlimBox`. This function
     /// makes a new allocation.
     #[cfg(any(feature = "nightly", feature = "unsafe_stable", doc))]
-    #[cfg_attr(
-        all(doc, feature = "nightly"),
-        doc(cfg(any(feature = "nightly", feature = "unsafe_stable")))
-    )]
+    #[cfg_attr(doc, doc(cfg(any(feature = "nightly", feature = "unsafe_stable"))))]
     pub fn from_box(boxed: Box<T>) -> Self {
         use core::alloc::Layout;
 
