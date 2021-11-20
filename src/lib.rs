@@ -8,11 +8,11 @@ use core::{
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
-    ptr::{self, NonNull},
+    ptr::NonNull,
 };
 
 #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
-use core::alloc::Layout;
+use core::{alloc::Layout, ptr};
 
 /// Stable version of [`pointer::set_ptr_value`][set_ptr_value] that does enough
 /// checks to hopefully make it loudly fail if and when the layout of `*mut T`
@@ -75,7 +75,7 @@ unsafe fn dealloc_extended(ptr: *mut u8, layout: Layout) {
 #[doc(hidden)]
 #[repr(C)]
 pub struct Inner<T: ?Sized, S: ?Sized = T> {
-    this: *mut Inner<T>,
+    this: Option<NonNull<Inner<T>>>,
     value: S,
 }
 
@@ -83,11 +83,8 @@ impl<T: ?Sized, S> Inner<T, S> {
     /// Make an `Inner<T, S>` out of a `value` of type `S` and any pointer to an
     /// `Inner<T>` (i.e. an `Inner<T, T>`). Such pointer can be obtained by
     /// casting from a pointer to `T`. Used by [`slimbox_unsize!`].
-    pub fn new(value: S, any_ptr: *mut Inner<T>) -> Self {
-        Self {
-            this: any_ptr,
-            value,
-        }
+    pub fn new(value: S) -> Self {
+        Self { this: None, value }
     }
 }
 
@@ -156,8 +153,11 @@ impl<T: ?Sized> SlimBox<T> {
         let boxed = Box::into_raw(boxed);
 
         // SAFETY: we just unpacked `boxed` from a `Box<Inner<T>>`
-        unsafe { (*boxed).this = boxed };
+        unsafe { (*boxed).this = Some(NonNull::new_unchecked(boxed)) };
 
+        // the following cast is sound because Inner<T> is repr(C) so a pointer
+        // can be cast to its first field, which is a Some of
+        // Option<NonNull<Inner<T>>> which is compatible with *mut Inner<T>
         Self {
             inner_box: InnerPtr(NonNull::new(boxed as *mut *mut Inner<T>).unwrap()),
             _phantom: PhantomData,
@@ -169,10 +169,7 @@ impl<T: ?Sized> SlimBox<T> {
     where
         T: Sized,
     {
-        Self::from_inner(Box::new(Inner {
-            this: ptr::null_mut(),
-            value,
-        }))
+        Self::from_inner(Box::new(Inner::new(value)))
     }
 
     /// Moves the value contained in `boxed` into a `SlimBox`. This function
@@ -245,21 +242,19 @@ impl<T: ?Sized> SlimBox<T> {
     }
 }
 
+#[doc(hidden)]
+pub mod __ {
+    pub use alloc::boxed::Box;
+}
+
 /// `slimbox_unsize!(T, expression)` will unsize `expression` into a [`SlimBox<T>`]
 #[macro_export]
 macro_rules! slimbox_unsize {
-    ($T:ty, $expression:expr) => {{
-        let value = $expression;
-        let any_ptr = &value as *const $T as *mut $crate::Inner<$T>;
-        let inner = $crate::Inner::<$T, _>::new(value, any_ptr);
-
-        let boxed = {
-            extern crate alloc;
-            alloc::boxed::Box::new(inner)
-        };
-
-        $crate::SlimBox::<$T>::from_inner(boxed as _)
-    }};
+    ($T:ty, $expression:expr) => {
+        $crate::SlimBox::<$T>::from_inner($crate::__::Box::new($crate::Inner::<$T, _>::new(
+            $expression,
+        )))
+    };
 }
 
 impl<T: ?Sized> Drop for SlimBox<T> {
