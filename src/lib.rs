@@ -248,7 +248,8 @@ impl<T: ?Sized> SlimBox<T> {
     }
 }
 
-/// `slimbox_unsize!(T, expression)` will unsize `expression` into a [`SlimBox<T>`]
+/// `slimbox_unsize!(T, expression)` will unsize `expression` into a
+/// [`SlimBox<T>`]. The `T` parameter can be omitted if it can be inferred.
 #[macro_export]
 macro_rules! slimbox_unsize {
     ($expression:expr) => {
