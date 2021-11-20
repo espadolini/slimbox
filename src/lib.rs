@@ -557,20 +557,4 @@ mod test {
 
         assert_eq!(r, 42);
     }
-
-    #[cfg(feature = "unstable")]
-    #[test]
-    fn unsize() {
-        let foo = SlimBox::<[i32]>::from_unsize([1, 2, 3, 4]);
-
-        assert_eq!(mem::size_of_val(&foo), mem::size_of::<*const ()>());
-
-        assert_eq!(
-            mem::size_of_val(&foo.deref()),
-            mem::size_of::<*const [i32]>(),
-        );
-
-        assert_eq!(foo.len(), 4);
-        assert_eq!(foo[1], 2);
-    }
 }
