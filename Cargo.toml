@@ -3,6 +3,10 @@ name = "slimbox"
 version = "0.0.0"
 edition = "2021"
 
+description = "A thin pointer type for heap allocation"
+repository = "https://github.com/espadolini/slimbox"
+license = "MIT OR Apache-2.0"
+
 [dependencies]
 
 [features]
