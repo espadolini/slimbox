@@ -121,7 +121,8 @@ impl<T: ?Sized> InnerPtr<T> {
     ///
     /// # Safety
     ///
-    /// `self` must point to a valid `Inner<T>` with a valid `this` member.
+    /// `self` must point to a valid `Inner<T>` with a valid `this` member and
+    /// it must be legal to build a shared reference to it.
     unsafe fn as_ref<'a>(self) -> &'a Inner<T> {
         &*self.as_ptr()
     }
@@ -131,7 +132,8 @@ impl<T: ?Sized> InnerPtr<T> {
     ///
     /// # Safety
     ///
-    /// `self` must point to a valid `Inner<T>` with a valid `this` member.
+    /// `self` must point to a valid `Inner<T>` with a valid `this` member and
+    /// it must be legal to build an exclusive reference to it.
     unsafe fn as_mut<'a>(self) -> &'a mut Inner<T> {
         &mut *self.as_ptr()
     }
