@@ -214,16 +214,16 @@ impl<T: ?Sized> SlimBox<T> {
     }
 
     /// Returns a `*mut c_void` pointing to the internal allocation, which can
-    /// be conveniently passed over FFI boundaries and used later with
-    /// [`SlimRef::from_raw`] or [`SlimMut::from_raw`].
+    /// be conveniently passed over FFI boundaries that expect a pointer type,
+    /// and used later with [`SlimRef::from_raw`] or [`SlimMut::from_raw`].
     pub fn as_raw(&self) -> *mut c_void {
         self.inner_box.0.as_ptr() as _
     }
 
     /// Consumes the box and returns a `*mut c_void` pointing to its internal
-    /// allocation, which can be conveniently passed over FFI boundaries and
-    /// used later with [`from_raw`][Self::from_raw], [`SlimRef::from_raw`] or
-    /// [`SlimMut::from_raw`].
+    /// allocation, which can be conveniently passed over FFI boundaries that
+    /// expect a pointer type, and used later with [`from_raw`][Self::from_raw],
+    /// [`SlimRef::from_raw`] or [`SlimMut::from_raw`].
     pub fn into_raw(self) -> *mut c_void {
         let pointer = self.as_raw();
         mem::forget(self);
@@ -302,8 +302,8 @@ impl<T: ?Sized> Clone for SlimRef<'_, T> {
 
 impl<T: ?Sized> SlimRef<'_, T> {
     /// Returns a `*const c_void` pointing to the internal allocation, which can
-    /// be conveniently passed over FFI boundaries and used later with
-    /// [`from_raw`][Self::from_raw].
+    /// be conveniently passed over FFI boundaries that expect a pointer type,
+    /// and used later with [`from_raw`][Self::from_raw].
     pub fn as_raw(&self) -> *const c_void {
         self.inner_ref.0.as_ptr() as _
     }
@@ -348,8 +348,9 @@ pub struct SlimMut<'a, T: ?Sized> {
 
 impl<T: ?Sized> SlimMut<'_, T> {
     /// Returns a `*mut c_void` pointing to the internal allocation, which can
-    /// be conveniently passed over FFI boundaries and used later with
-    /// [`from_raw`][Self::from_raw] or [`SlimRef::from_raw`].
+    /// be conveniently passed over FFI boundaries that expect a pointer type,
+    /// and used later with [`from_raw`][Self::from_raw] or
+    /// [`SlimRef::from_raw`].
     pub fn as_raw(&self) -> *mut c_void {
         self.inner_mut.0.as_ptr() as _
     }
