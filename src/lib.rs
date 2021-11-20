@@ -243,7 +243,7 @@ impl<T: ?Sized> SlimBox<T> {
 }
 
 #[doc(hidden)]
-pub mod __ {
+pub mod __private {
     pub use alloc::boxed::Box;
 }
 
@@ -251,7 +251,7 @@ pub mod __ {
 #[macro_export]
 macro_rules! slimbox_unsize {
     ($T:ty, $expression:expr) => {
-        $crate::SlimBox::<$T>::from_inner($crate::__::Box::new($crate::Inner::<$T, _>::new(
+        $crate::SlimBox::<$T>::from_inner($crate::__private::Box::new($crate::Inner::<$T, _>::new(
             $expression,
         )))
     };
