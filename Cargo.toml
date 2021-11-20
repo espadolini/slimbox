@@ -7,4 +7,4 @@ edition = "2021"
 
 [features]
 nightly = []
-unsound_stable = []
+unsafe_stable = []

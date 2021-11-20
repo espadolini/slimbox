@@ -30,7 +30,7 @@ fn set_ptr_value<T: ?Sized>(ptr: *mut T, val: *mut u8) -> *mut T {
 /// quickly.
 ///
 /// [set_ptr_value]: https://doc.rust-lang.org/std/primitive.pointer.html#method.set_ptr_value
-#[cfg(all(feature = "unsound_stable", not(feature = "nightly")))]
+#[cfg(all(feature = "unsafe_stable", not(feature = "nightly")))]
 fn set_ptr_value<T: ?Sized>(mut ptr: *mut T, val: *mut u8) -> *mut T {
     assert!(mem::size_of::<*mut T>() >= mem::size_of::<*mut u8>());
     assert!(mem::align_of::<*mut T>() >= mem::align_of::<*mut u8>());
@@ -55,7 +55,7 @@ fn set_ptr_value<T: ?Sized>(mut ptr: *mut T, val: *mut u8) -> *mut T {
 
 /// [`alloc::alloc::alloc`] but returns a dangling aligned pointer on a
 /// zero-sized allocation.
-#[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+#[cfg(any(feature = "unsafe_stable", feature = "nightly"))]
 fn alloc_extended(layout: core::alloc::Layout) -> *mut u8 {
     if layout.size() != 0 {
         let storage = unsafe { alloc::alloc::alloc(layout) };
@@ -69,7 +69,7 @@ fn alloc_extended(layout: core::alloc::Layout) -> *mut u8 {
 }
 
 /// [`alloc::alloc::dealloc`] but does nothing on a zero-sized allocation.
-#[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+#[cfg(any(feature = "unsafe_stable", feature = "nightly"))]
 unsafe fn dealloc_extended(ptr: *mut u8, layout: core::alloc::Layout) {
     if layout.size() != 0 {
         alloc::alloc::dealloc(ptr, layout);
@@ -187,7 +187,7 @@ impl<T: ?Sized> SlimBox<T> {
 
     /// Moves the value contained in `boxed` into a `SlimBox`. This function
     /// makes a new allocation.
-    #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+    #[cfg(any(feature = "unsafe_stable", feature = "nightly"))]
     pub fn from_box(boxed: Box<T>) -> Self {
         use core::alloc::Layout;
 
@@ -481,7 +481,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+    #[cfg(any(feature = "unsafe_stable", feature = "nightly"))]
     fn slice() {
         let foo = SlimBox::<[i32]>::from_box(Box::new([1, 2, 3, 4]));
 
@@ -518,7 +518,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+    #[cfg(any(feature = "unsafe_stable", feature = "nightly"))]
     fn fn_trait() {
         let y = 5;
 
