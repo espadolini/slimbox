@@ -11,8 +11,14 @@ use core::{
     ptr::NonNull,
 };
 
-#[cfg(any(feature = "unsound_stable", feature = "nightly"))]
-use core::{alloc::Layout, ptr};
+/// [`pointer::set_ptr_value`][set_ptr_value] in a function, so it can be
+/// replaced when nightly features are not available.
+///
+/// [set_ptr_value]: https://doc.rust-lang.org/std/primitive.pointer.html#method.set_ptr_value
+#[cfg(feature = "nightly")]
+fn set_ptr_value<T: ?Sized>(ptr: *mut T, val: *mut u8) -> *mut T {
+    ptr.set_ptr_value(val)
+}
 
 /// Stable version of [`pointer::set_ptr_value`][set_ptr_value] that does enough
 /// checks to hopefully make it loudly fail if and when the layout of `*mut T`
@@ -42,15 +48,10 @@ fn set_ptr_value<T: ?Sized>(mut ptr: *mut T, val: *mut u8) -> *mut T {
     ptr
 }
 
-#[cfg(feature = "nightly")]
-fn set_ptr_value<T: ?Sized>(ptr: *mut T, val: *mut u8) -> *mut T {
-    ptr.set_ptr_value(val)
-}
-
 /// [`alloc::alloc::alloc`] but returns a dangling aligned pointer on a
 /// zero-sized allocation.
 #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
-fn alloc_extended(layout: Layout) -> *mut u8 {
+fn alloc_extended(layout: core::alloc::Layout) -> *mut u8 {
     if layout.size() != 0 {
         let storage = unsafe { alloc::alloc::alloc(layout) };
         if storage.is_null() {
@@ -64,7 +65,7 @@ fn alloc_extended(layout: Layout) -> *mut u8 {
 
 /// [`alloc::alloc::dealloc`] but does nothing on a zero-sized allocation.
 #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
-unsafe fn dealloc_extended(ptr: *mut u8, layout: Layout) {
+unsafe fn dealloc_extended(ptr: *mut u8, layout: core::alloc::Layout) {
     if layout.size() != 0 {
         alloc::alloc::dealloc(ptr, layout);
     }
@@ -183,6 +184,8 @@ impl<T: ?Sized> SlimBox<T> {
     /// makes a new allocation.
     #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
     pub fn from_box(boxed: Box<T>) -> Self {
+        use core::alloc::Layout;
+
         // we manually build the Layout for an Inner<T> that can hold the
         // currently boxed value
         let inner_layout = Layout::new::<*mut Inner<T>>();
@@ -196,9 +199,9 @@ impl<T: ?Sized> SlimBox<T> {
         // SAFETY: we're initializing the newly-allocated Inner<T> that lives at
         // inner_ptr, moving the T from the allocation at value_ptr
         unsafe {
-            ptr::write(inner_ptr as *mut Option<NonNull<Inner<T>>>, None);
+            core::ptr::write(inner_ptr as *mut Option<NonNull<Inner<T>>>, None);
 
-            ptr::copy_nonoverlapping(
+            core::ptr::copy_nonoverlapping(
                 value_ptr as *const u8,
                 inner_ptr.add(value_offset),
                 value_layout.size(),
