@@ -72,6 +72,8 @@ unsafe fn dealloc_extended(ptr: *mut u8, layout: Layout) {
 
 /// A container for a potentially wide pointer to the unsized container, and a
 /// value. The internal allocation type used by [`SlimBox`].
+///
+/// Intended for internal use.
 #[doc(hidden)]
 #[repr(C)]
 pub struct Inner<T: ?Sized, S: ?Sized = T> {
@@ -80,11 +82,12 @@ pub struct Inner<T: ?Sized, S: ?Sized = T> {
 }
 
 impl<T: ?Sized, S> Inner<T, S> {
-    /// Make an `Inner<T, S>` out of a `value` of type `S` and any pointer to an
-    /// `Inner<T>` (i.e. an `Inner<T, T>`). Such pointer can be obtained by
-    /// casting from a pointer to `T`. Used by [`slimbox_unsize!`].
-    pub fn new(value: S) -> Self {
-        Self { this: None, value }
+    /// Make an `Box<Inner<T, S>>` out of a `value` of type `S`.
+    ///
+    /// Intended for internal use.
+    #[doc(hidden)]
+    pub fn boxed(value: S) -> Box<Self> {
+        Box::new(Self { this: None, value })
     }
 }
 
@@ -148,8 +151,10 @@ pub struct SlimBox<T: ?Sized> {
 
 impl<T: ?Sized> SlimBox<T> {
     /// Repacks a `Box<Inner<T>>` into a `SlimBox<T>`, thinning its pointer.
+    ///
+    /// Intended for internal use.
     #[doc(hidden)]
-    pub fn from_inner(boxed: Box<Inner<T>>) -> Self {
+    pub fn from_boxed_inner(boxed: Box<Inner<T>>) -> Self {
         let boxed = Box::into_raw(boxed);
 
         // SAFETY: we just unpacked `boxed` from a `Box<Inner<T>>`
@@ -169,7 +174,7 @@ impl<T: ?Sized> SlimBox<T> {
     where
         T: Sized,
     {
-        Self::from_inner(Box::new(Inner::new(value)))
+        Self::from_boxed_inner(Inner::boxed(value))
     }
 
     /// Moves the value contained in `boxed` into a `SlimBox`. This function
@@ -183,31 +188,27 @@ impl<T: ?Sized> SlimBox<T> {
         let (inner_layout, value_offset) = inner_layout.extend(value_layout).unwrap();
         let inner_layout = inner_layout.pad_to_align();
 
-        let inner_storage = alloc_extended(inner_layout);
-
-        let boxed = Box::into_raw(boxed);
+        let inner_ptr = alloc_extended(inner_layout);
+        let value_ptr = Box::into_raw(boxed);
 
         // SAFETY: we're initializing the newly-allocated Inner<T> that lives at
-        // inner_storage, copying metadata and moving the value in value_storage
+        // inner_ptr, moving the T from the allocation at value_ptr
         unsafe {
-            ptr::write(
-                inner_storage.cast(),
-                set_ptr_value(boxed, inner_storage) as *mut Inner<T>,
-            );
+            ptr::write(inner_ptr as *mut Option<NonNull<Inner<T>>>, None);
+
             ptr::copy_nonoverlapping(
-                boxed.cast(),
-                inner_storage.add(value_offset),
+                value_ptr as *const u8,
+                inner_ptr.add(value_offset),
                 value_layout.size(),
             );
+            dealloc_extended(value_ptr as *mut u8, value_layout);
         }
 
-        // SAFETY: value_storage is an allocated T that we moved from
-        unsafe { dealloc_extended(boxed.cast(), value_layout) };
+        // copy the T metadata from the boxed pointer
+        let inner_ptr = set_ptr_value(value_ptr, inner_ptr) as *mut Inner<T>;
 
-        Self {
-            inner_box: InnerPtr(NonNull::new(inner_storage as *mut *mut Inner<T>).unwrap()),
-            _phantom: PhantomData,
-        }
+        // SAFETY: inner_ptr points to a valid, initialized, uniquely owned Inner<T>
+        Self::from_boxed_inner(unsafe { Box::from_raw(inner_ptr) })
     }
 
     /// Returns a `*mut c_void` pointing to the internal allocation, which can
@@ -242,18 +243,14 @@ impl<T: ?Sized> SlimBox<T> {
     }
 }
 
-#[doc(hidden)]
-pub mod __private {
-    pub use alloc::boxed::Box;
-}
-
 /// `slimbox_unsize!(T, expression)` will unsize `expression` into a [`SlimBox<T>`]
 #[macro_export]
 macro_rules! slimbox_unsize {
+    ($expression:expr) => {
+        $crate::SlimBox::from_boxed_inner($crate::Inner::boxed($expression))
+    };
     ($T:ty, $expression:expr) => {
-        $crate::SlimBox::<$T>::from_inner($crate::__private::Box::new($crate::Inner::<$T, _>::new(
-            $expression,
-        )))
+        $crate::SlimBox::<$T>::from_boxed_inner($crate::Inner::<$T, _>::boxed($expression))
     };
 }
 
