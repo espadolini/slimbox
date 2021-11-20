@@ -1,10 +1,9 @@
-#![cfg_attr(feature = "unsize", feature(unsize))]
+#![cfg_attr(feature = "nightly", feature(set_ptr_value))]
 #![no_std]
 extern crate alloc;
 
 use alloc::boxed::Box;
 use core::{
-    alloc::Layout,
     ffi::c_void,
     marker::PhantomData,
     mem,
@@ -12,14 +11,15 @@ use core::{
     ptr::{self, NonNull},
 };
 
-#[cfg(feature = "unsize")]
-use core::marker::Unsize;
+#[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+use core::alloc::Layout;
 
 /// Stable version of [`pointer::set_ptr_value`][set_ptr_value] that does enough
 /// checks to hopefully make it loudly fail if and when the layout of `*mut T`
 /// for `T: !Sized` changes.
 ///
 /// [set_ptr_value]: https://doc.rust-lang.org/std/primitive.pointer.html#method.set_ptr_value
+#[cfg(all(feature = "unsound_stable", not(feature = "nightly")))]
 fn set_ptr_value<T: ?Sized>(mut ptr: *mut T, val: *mut u8) -> *mut T {
     assert!(mem::size_of::<*mut T>() >= mem::size_of::<*mut u8>());
     assert!(mem::align_of::<*mut T>() == mem::align_of::<*mut u8>());
@@ -42,9 +42,15 @@ fn set_ptr_value<T: ?Sized>(mut ptr: *mut T, val: *mut u8) -> *mut T {
     ptr
 }
 
+#[cfg(feature = "nightly")]
+fn set_ptr_value<T: ?Sized>(ptr: *mut T, val: *mut u8) -> *mut T {
+    ptr.set_ptr_value(val)
+}
+
 /// [`alloc::alloc::alloc`] but returns a dangling aligned pointer on a
 /// zero-sized allocation.
-fn alloc(layout: Layout) -> *mut u8 {
+#[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+fn alloc_extended(layout: Layout) -> *mut u8 {
     if layout.size() != 0 {
         let storage = unsafe { alloc::alloc::alloc(layout) };
         if storage.is_null() {
@@ -57,20 +63,32 @@ fn alloc(layout: Layout) -> *mut u8 {
 }
 
 /// [`alloc::alloc::dealloc`] but does nothing on a zero-sized allocation.
-unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
+#[cfg(any(feature = "unsound_stable", feature = "nightly"))]
+unsafe fn dealloc_extended(ptr: *mut u8, layout: Layout) {
     if layout.size() != 0 {
         alloc::alloc::dealloc(ptr, layout);
     }
 }
 
-/// A container for a potentially wide pointer to the container, and a value.
-///
-/// Invariant: the `this` pointer points to (the unsizing of) the struct itself,
-/// so the struct should never be exposed to user code that could move it.
+/// A container for a potentially wide pointer to the unsized container, and a
+/// value. The internal allocation type used by [`SlimBox`].
+#[doc(hidden)]
 #[repr(C)]
-struct Inner<M: ?Sized, V: ?Sized = M> {
-    this: *mut Inner<M>,
-    value: V,
+pub struct Inner<T: ?Sized, S: ?Sized = T> {
+    this: *mut Inner<T>,
+    value: S,
+}
+
+impl<T: ?Sized, S> Inner<T, S> {
+    /// Make an `Inner<T, S>` out of a `value` of type `S` and any pointer to an
+    /// `Inner<T>` (i.e. an `Inner<T, T>`). Such pointer can be obtained by
+    /// casting from a pointer to `T`. Used by [`slimbox_unsize!`].
+    pub fn new(value: S, any_ptr: *mut Inner<T>) -> Self {
+        Self {
+            this: any_ptr,
+            value,
+        }
+    }
 }
 
 /// A non-null thin pointer to [`Inner<T>`], by virtue of pointing to its first
@@ -93,7 +111,7 @@ impl<T: ?Sized> InnerPtr<T> {
     ///
     /// # Safety
     ///
-    /// `self` must point to a valid `Inner<T>`.
+    /// `self` must point to a valid `Inner<T>` with a valid `this` member.
     unsafe fn as_ptr(self) -> *mut Inner<T> {
         *self.0.as_ptr()
     }
@@ -103,7 +121,7 @@ impl<T: ?Sized> InnerPtr<T> {
     ///
     /// # Safety
     ///
-    /// `self` must point to a valid `Inner<T>`.
+    /// `self` must point to a valid `Inner<T>` with a valid `this` member.
     unsafe fn as_ref<'a>(self) -> &'a Inner<T> {
         &*self.as_ptr()
     }
@@ -113,7 +131,7 @@ impl<T: ?Sized> InnerPtr<T> {
     ///
     /// # Safety
     ///
-    /// `self` must point to a valid `Inner<T>`.
+    /// `self` must point to a valid `Inner<T>` with a valid `this` member.
     unsafe fn as_mut<'a>(self) -> &'a mut Inner<T> {
         &mut *self.as_ptr()
     }
@@ -132,73 +150,34 @@ pub struct SlimBox<T: ?Sized> {
 }
 
 impl<T: ?Sized> SlimBox<T> {
+    /// Repacks a `Box<Inner<T>>` into a `SlimBox<T>`, thinning its pointer.
+    #[doc(hidden)]
+    pub fn from_inner(boxed: Box<Inner<T>>) -> Self {
+        let boxed = Box::into_raw(boxed);
+
+        // SAFETY: we just unpacked `boxed` from a `Box<Inner<T>>`
+        unsafe { (*boxed).this = boxed };
+
+        Self {
+            inner_box: InnerPtr(NonNull::new(boxed as *mut *mut Inner<T>).unwrap()),
+            _phantom: PhantomData,
+        }
+    }
+
     /// Moves `value` in a new `SlimBox<T>`. `T` must be `Sized` to use this.
     pub fn new(value: T) -> Self
     where
         T: Sized,
     {
-        let mut boxed = Box::into_raw(Box::new(Inner::<T> {
+        Self::from_inner(Box::new(Inner {
             this: ptr::null_mut(),
             value,
-        }));
-
-        // we do `Box::into_raw` immediately because we need a pointer with the
-        // correct validity; casting a reference (with `&mut *boxed as *mut _`)
-        // will give us a pointer that's only valid until that reference
-        // expires, and it seems like `addr_of_mut!(*boxed)` goes through Deref
-        // and thus is subject to the same restriction
-
-        // SAFETY: `boxed` is a pointer to the Inner<T> we just made
-        unsafe { (*boxed).this = boxed };
-
-        Self {
-            inner_box: InnerPtr(NonNull::new(boxed).unwrap().cast()),
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Moves `value` in a new `SlimBox<T>`. `value` must be of a type that can
-    /// be [unsized][Unsize] as `T`; i.e. you can use this to `SlimBox` a value
-    /// of a type that implements a trait `Trait` into a `SlimBox<dyn Trait>`.
-    #[cfg(feature = "unsize")]
-    pub fn from_unsize<S: Unsize<T>>(value: S) -> Self {
-        let boxed = Box::into_raw(Box::new(Inner {
-            this: ptr::null_mut::<S>() as *mut T as *mut Inner<T>,
-            value,
-        }));
-
-        // SAFETY: `boxed` is a pointer to the Inner<T, S> we just made
-        unsafe { (*boxed).this = boxed as *mut Inner<T> };
-
-        Self {
-            inner_box: InnerPtr(NonNull::new(boxed).unwrap().cast()),
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Unsizes `value` into a `SlimBox<T>` given the value and a (potentially)
-    /// wide pointer with the correct metadata for it. Used by the
-    /// [`slimbox_unsize`] macro.
-    ///
-    /// # Safety
-    ///
-    /// The metadata in `ptr` must be valid metadata for a pointer to `value` as
-    /// T.
-    pub unsafe fn from_unsize_and_ptr<S>(value: S, ptr: *const T) -> Self {
-        let boxed = Box::into_raw(Box::new(Inner {
-            this: ptr as *mut Inner<T>,
-            value,
-        }));
-        (*boxed).this = set_ptr_value(ptr as *mut Inner<T>, boxed as *mut u8);
-
-        Self {
-            inner_box: InnerPtr(NonNull::new(boxed).unwrap().cast()),
-            _phantom: PhantomData,
-        }
+        }))
     }
 
     /// Moves the value contained in `boxed` into a `SlimBox`. This function
     /// makes a new allocation.
+    #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
     pub fn from_box(boxed: Box<T>) -> Self {
         // we manually build the Layout for an Inner<T> that can hold the
         // currently boxed value
@@ -207,7 +186,7 @@ impl<T: ?Sized> SlimBox<T> {
         let (inner_layout, value_offset) = inner_layout.extend(value_layout).unwrap();
         let inner_layout = inner_layout.pad_to_align();
 
-        let inner_storage = alloc(inner_layout);
+        let inner_storage = alloc_extended(inner_layout);
 
         let boxed = Box::into_raw(boxed);
 
@@ -226,10 +205,10 @@ impl<T: ?Sized> SlimBox<T> {
         }
 
         // SAFETY: value_storage is an allocated T that we moved from
-        unsafe { dealloc(boxed.cast(), value_layout) };
+        unsafe { dealloc_extended(boxed.cast(), value_layout) };
 
         Self {
-            inner_box: InnerPtr(NonNull::new(inner_storage).unwrap().cast()),
+            inner_box: InnerPtr(NonNull::new(inner_storage as *mut *mut Inner<T>).unwrap()),
             _phantom: PhantomData,
         }
     }
@@ -260,26 +239,26 @@ impl<T: ?Sized> SlimBox<T> {
     /// like the one returned by [`into_raw`][Self::into_raw].
     pub unsafe fn from_raw(pointer: *mut c_void) -> Self {
         Self {
-            inner_box: InnerPtr(NonNull::new_unchecked(pointer).cast()),
+            inner_box: InnerPtr(NonNull::new_unchecked(pointer as *mut *mut Inner<T>)),
             _phantom: PhantomData,
         }
     }
 }
 
-/// Unsizes an expression into a [`SlimBox<T>`]; has two forms:
-/// - `slimbox_unsize(expression)`, which will try to infer the type of the
-///   resulting `SlimBox`
-/// - `slimbox_unsize(T, expression)`, which will unsize `expression` into a
-///   `SlimBox<T>`
+/// `slimbox_unsize!(T, expression)` will unsize `expression` into a [`SlimBox<T>`]
 #[macro_export]
 macro_rules! slimbox_unsize {
-    ($expression:expr) => {{
-        $crate::slimbox_unsize!(_, $expression)
-    }};
     ($T:ty, $expression:expr) => {{
-        let val = $expression;
-        let ptr = &val as &$T as *const $T;
-        unsafe { $crate::SlimBox::<$T>::from_unsize_and_ptr(val, ptr) }
+        let value = $expression;
+        let any_ptr = &value as *const $T as *mut $crate::Inner<$T>;
+        let inner = $crate::Inner::<$T, _>::new(value, any_ptr);
+
+        let boxed = {
+            extern crate alloc;
+            alloc::boxed::Box::new(inner)
+        };
+
+        $crate::SlimBox::<$T>::from_inner(boxed as _)
     }};
 }
 
@@ -476,8 +455,6 @@ impl<T: ?Sized> AsSlimMut<T> for SlimMut<'_, T> {
 mod test {
     use super::*;
 
-    use core::mem;
-
     #[test]
     fn sized() {
         let mut foo = SlimBox::new(42u64);
@@ -500,6 +477,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
     fn slice() {
         let foo = SlimBox::<[i32]>::from_box(Box::new([1, 2, 3, 4]));
 
@@ -536,6 +514,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(any(feature = "unsound_stable", feature = "nightly"))]
     fn fn_trait() {
         let y = 5;
 
@@ -571,7 +550,7 @@ mod test {
             userdata()
         }
 
-        let six_times_nine: SlimBox<dyn Fn() -> i32> = SlimBox::from_box(Box::new(|| 42));
+        let six_times_nine = slimbox_unsize!(dyn Fn() -> i32, || 42);
 
         let r = calls_callback(
             trampoline,
@@ -581,7 +560,7 @@ mod test {
         assert_eq!(r, 42);
     }
 
-    #[cfg(feature = "unsize")]
+    #[cfg(feature = "unstable")]
     #[test]
     fn unsize() {
         let foo = SlimBox::<[i32]>::from_unsize([1, 2, 3, 4]);
