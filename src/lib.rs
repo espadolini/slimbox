@@ -24,11 +24,16 @@ fn set_ptr_value<T: ?Sized>(ptr: *mut T, val: *mut u8) -> *mut T {
 /// checks to hopefully make it loudly fail if and when the layout of `*mut T`
 /// for `T: !Sized` changes.
 ///
+/// This could technically trigger UB if the layout of trait objects (or unsized
+/// pointers in general) changes such that the memory at offset 0 in a fat
+/// pointer has validity requirements; however, miri would notice that pretty
+/// quickly.
+///
 /// [set_ptr_value]: https://doc.rust-lang.org/std/primitive.pointer.html#method.set_ptr_value
 #[cfg(all(feature = "unsound_stable", not(feature = "nightly")))]
 fn set_ptr_value<T: ?Sized>(mut ptr: *mut T, val: *mut u8) -> *mut T {
     assert!(mem::size_of::<*mut T>() >= mem::size_of::<*mut u8>());
-    assert!(mem::align_of::<*mut T>() == mem::align_of::<*mut u8>());
+    assert!(mem::align_of::<*mut T>() >= mem::align_of::<*mut u8>());
 
     let fake_ptr_a = 1 as *mut u8;
     let fake_ptr_b = 2 as *mut u8;
