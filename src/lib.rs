@@ -321,11 +321,11 @@ impl<T: ?Sized> SlimBox<T> {
 /// [`SlimBox<T>`]. The `T` parameter can be omitted if it can be inferred.
 #[macro_export]
 macro_rules! slimbox_unsize {
-    ($expression:expr) => {
-        $crate::SlimBox::from_boxed_inner($crate::Inner::boxed($expression))
-    };
     ($T:ty, $expression:expr) => {
         $crate::SlimBox::<$T>::from_boxed_inner($crate::Inner::<$T, _>::boxed($expression))
+    };
+    ($expression:expr) => {
+        $crate::slimbox_unsize!(_, $expression)
     };
 }
 
