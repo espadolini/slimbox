@@ -153,12 +153,14 @@ macro_rules! impl_unbound_copy {
     };
 }
 
-/// A container for a potentially wide pointer to the unsized container, and a
-/// value. The internal container type used by [`SlimBox`].
+/// A container for a value that can also hold enough information to be able to
+/// reconstruct a (potentially-wide) pointer to itself from a thin pointer to
+/// itself. The internal container type used by [`SlimBox`].
 #[repr(C)]
 pub struct Slimmable<T: ?Sized, S: ?Sized = T> {
-    this: MaybeUninit<*mut Slimmable<T>>,
-    /// The wrapped value
+    /// Enough space for a `SlimAnchor` for `Slimmable<T, S>` as `Slimmable<T, T>`.
+    anchor: MaybeUninit<SlimAnchor<T>>,
+    /// The wrapped value.
     pub value: S,
 }
 
@@ -166,7 +168,7 @@ impl<T: ?Sized, S> Slimmable<T, S> {
     /// Make a `Slimmable<T, S>` out of a `value` of type `S`.
     pub fn new(value: S) -> Slimmable<T, S> {
         Slimmable {
-            this: MaybeUninit::uninit(),
+            anchor: MaybeUninit::uninit(),
             value,
         }
     }
@@ -177,15 +179,49 @@ impl<T: ?Sized, S> Slimmable<T, S> {
     }
 }
 
-/// A non-null thin pointer to a [`Slimmable<T>`], by virtue of pointing to its
-/// first field.
+/// The first field of a [`Slimmable`], containing enough information to be able
+/// to reconstruct a `*mut Slimmable<T>` from a `*mut SlimAnchor<T>`.
+struct SlimAnchor<T: ?Sized>(*mut Slimmable<T>);
+impl_unbound_copy! { SlimAnchor<T> }
+
+// SAFETY: our usage of the anchor will depend on wrapper types' bounds anyway
+unsafe impl<T: ?Sized> Send for SlimAnchor<T> {}
+unsafe impl<T: ?Sized> Sync for SlimAnchor<T> {}
+
+impl<T: ?Sized> SlimAnchor<T> {
+    /// Extracts a `SlimAnchor` from `ptr`
+    fn new(ptr: *mut Slimmable<T>) -> SlimAnchor<T> {
+        SlimAnchor(ptr)
+    }
+}
+
+/// A non-null thin pointer to a [`Slimmable`], by virtue of pointing to its
+/// first field, a (potentially-uninit) [`SlimAnchor`].
 #[derive(Debug)]
 #[repr(transparent)]
-struct SlimPtr<T: ?Sized>(NonNull<*mut Slimmable<T>>);
-
+struct SlimPtr<T: ?Sized>(NonNull<SlimAnchor<T>>);
 impl_unbound_copy! { SlimPtr<T> }
 
+// SAFETY: we make SlimPtr Send and Sync so that our Box/Ref/Mut types are
+// automatically bound by their PhantomData
+unsafe impl<T: ?Sized> Send for SlimPtr<T> {}
+unsafe impl<T: ?Sized> Sync for SlimPtr<T> {}
+
 impl<T: ?Sized> SlimPtr<T> {
+    /// Creates a new `SlimPtr` if `ptr` is non-null.
+    fn new(ptr: *mut Slimmable<T>) -> Option<SlimPtr<T>> {
+        NonNull::new(ptr as *mut SlimAnchor<T>).map(SlimPtr)
+    }
+
+    /// Creates a new `SlimPtr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null.
+    unsafe fn from_raw_unchecked(ptr: *mut c_void) -> SlimPtr<T> {
+        SlimPtr(NonNull::new_unchecked(ptr as *mut SlimAnchor<T>))
+    }
+
     /// Reconstructs a regular (potentially wide) pointer to the pointed
     /// [`Slimmable<T>`].
     ///
@@ -193,7 +229,7 @@ impl<T: ?Sized> SlimPtr<T> {
     ///
     /// `self` must point to a valid `Slimmable<T>`.
     unsafe fn as_ptr(self) -> *mut Slimmable<T> {
-        *self.0.as_ptr()
+        (*self.0.as_ptr()).0
     }
 
     /// Reconstructs a shared reference to the pointed [`Slimmable<T>`], with
@@ -226,8 +262,10 @@ impl<T: ?Sized> SlimPtr<T> {
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SlimBox<T: ?Sized> {
+    /// Owned thin pointer to a `Slimmable`.
     slim_box: SlimPtr<T>,
-    _phantom: PhantomData<Box<Slimmable<T>>>,
+    /// Marker to act as if we have a `Box<T>`.
+    _phantom: PhantomData<Box<T>>,
 }
 
 impl<T: ?Sized> SlimBox<T> {
@@ -236,12 +274,12 @@ impl<T: ?Sized> SlimBox<T> {
         let ptr = Box::into_raw(boxed);
 
         // SAFETY: ptr points to a Slimmable<T>
-        unsafe { &mut (*ptr).this }.write(ptr);
+        unsafe { &mut (*ptr).anchor }.write(SlimAnchor::new(ptr));
 
         // the following cast is sound because Slimmable<T> is repr(C) so a
         // pointer to it can be cast to a pointer to its first field
         SlimBox {
-            slim_box: SlimPtr(NonNull::new(ptr as *mut *mut Slimmable<T>).unwrap()),
+            slim_box: SlimPtr::new(ptr).unwrap(),
             _phantom: PhantomData,
         }
     }
@@ -325,9 +363,9 @@ impl<T: ?Sized> SlimBox<T> {
     ///
     /// `pointer` must be an owned pointer to a valid `Slimmable<T>`, like the
     /// one returned by [`into_raw`][SlimBox::into_raw].
-    pub unsafe fn from_raw(pointer: *mut c_void) -> SlimBox<T> {
+    pub unsafe fn from_raw(ptr: *mut c_void) -> SlimBox<T> {
         SlimBox {
-            slim_box: SlimPtr(NonNull::new_unchecked(pointer as *mut *mut Slimmable<T>)),
+            slim_box: SlimPtr::from_raw_unchecked(ptr),
             _phantom: PhantomData,
         }
     }
@@ -387,10 +425,6 @@ impl<T: ?Sized> DerefMut for SlimBox<T> {
     }
 }
 
-// SAFETY: same bounds as Box<T>
-unsafe impl<T: ?Sized + Send> Send for SlimBox<T> {}
-unsafe impl<T: ?Sized + Sync> Sync for SlimBox<T> {}
-
 /// A thin shared reference; like `&T` but guaranteed to be as big as a regular
 /// pointer, even for `!Sized` types. It will typically refer to a value owned
 /// by a [`SlimBox`], but it can also refer to a stack-allocated [`Slimmable`]
@@ -398,10 +432,11 @@ unsafe impl<T: ?Sized + Sync> Sync for SlimBox<T> {}
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SlimRef<'a, T: ?Sized> {
+    /// Shared thin pointer to a `Slimmable`.
     slim_ref: SlimPtr<T>,
-    _phantom: PhantomData<&'a Slimmable<T>>,
+    /// Marker to act as if we have a `&T`.
+    _phantom: PhantomData<&'a T>,
 }
-
 impl_unbound_copy! { SlimRef<'_, T> }
 
 impl<T: ?Sized> SlimRef<'_, T> {
@@ -417,12 +452,12 @@ impl<T: ?Sized> SlimRef<'_, T> {
     ///
     /// # Safety
     ///
-    /// `pointer` must be a shared pointer to a valid `Slimmable<T>`, like the
-    /// one returned by [`as_raw`][SlimRef::as_raw], [`SlimBox::into_raw`],
+    /// `ptr` must be a shared pointer to a valid `Slimmable<T>`, like the one
+    /// returned by [`as_raw`][SlimRef::as_raw], [`SlimBox::into_raw`],
     /// [`SlimBox::as_raw`], or [`SlimMut::as_raw`].
-    pub unsafe fn from_raw<'a>(pointer: *const c_void) -> SlimRef<'a, T> {
+    pub unsafe fn from_raw<'a>(ptr: *const c_void) -> SlimRef<'a, T> {
         SlimRef {
-            slim_ref: SlimPtr(NonNull::new_unchecked(pointer as *mut c_void).cast()),
+            slim_ref: SlimPtr::from_raw_unchecked(ptr as *mut c_void),
             _phantom: PhantomData,
         }
     }
@@ -432,12 +467,12 @@ impl<T: ?Sized> SlimRef<'_, T> {
         let ptr = slimmable as *mut Slimmable<T>;
 
         // SAFETY: ptr points to a Slimmable<T>
-        unsafe { &mut (*ptr).this }.write(ptr);
+        unsafe { &mut (*ptr).anchor }.write(SlimAnchor::new(ptr));
 
         // the following cast is sound because Slimmable<T> is repr(C) so a
-        // pointer to it can be cast to a pointer to its first field
+        // pointer to it can be cast to a pointer to its anchor
         SlimRef {
-            slim_ref: SlimPtr(NonNull::new(ptr as *mut *mut Slimmable<T>).unwrap()),
+            slim_ref: SlimPtr::new(ptr).unwrap(),
             _phantom: PhantomData,
         }
     }
@@ -447,15 +482,10 @@ impl<T: ?Sized> Deref for SlimRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: self.slim_ref points to a valid sharedly-borrowed
-        // Slimmable<T>
+        // SAFETY: self.slim_ref points to a valid shared Slimmable<T>
         &unsafe { self.slim_ref.as_ref() }.value
     }
 }
-
-// SAFETY: same bounds as &T
-unsafe impl<T: ?Sized + Sync> Send for SlimRef<'_, T> {}
-unsafe impl<T: ?Sized + Sync> Sync for SlimRef<'_, T> {}
 
 /// A thin exclusive reference; like `&mut T` but guaranteed to be as big as a
 /// regular pointer, even for `!Sized` types. It will typically refer to a value
@@ -464,8 +494,10 @@ unsafe impl<T: ?Sized + Sync> Sync for SlimRef<'_, T> {}
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SlimMut<'a, T: ?Sized> {
+    /// Exclusive thin pointer to a `Slimmable`.
     slim_mut: SlimPtr<T>,
-    _phantom: PhantomData<&'a mut Slimmable<T>>,
+    /// Marker to act as if we have a `&mut T`.
+    _phantom: PhantomData<&'a mut T>,
 }
 
 impl<T: ?Sized> SlimMut<'_, T> {
@@ -482,12 +514,12 @@ impl<T: ?Sized> SlimMut<'_, T> {
     ///
     /// # Safety
     ///
-    /// `pointer` must be an exclusive pointer to a valid `Slimmable<T>`, like
+    /// `ptr` must be an exclusive pointer to a valid `Slimmable<T>`, like
     /// the one returned by [`as_raw`][SlimMut::as_raw], [`SlimBox::into_raw`], or
     /// [`SlimBox::as_raw`].
-    pub unsafe fn from_raw<'a>(pointer: *mut c_void) -> SlimMut<'a, T> {
+    pub unsafe fn from_raw<'a>(ptr: *mut c_void) -> SlimMut<'a, T> {
         SlimMut {
-            slim_mut: SlimPtr(NonNull::new_unchecked(pointer).cast()),
+            slim_mut: SlimPtr::from_raw_unchecked(ptr),
             _phantom: PhantomData,
         }
     }
@@ -513,12 +545,12 @@ impl<T: ?Sized> SlimMut<'_, T> {
         let ptr = slimmable as *mut Slimmable<T>;
 
         // SAFETY: ptr points to a Slimmable<T>
-        unsafe { &mut (*ptr).this }.write(ptr);
+        unsafe { &mut (*ptr).anchor }.write(SlimAnchor::new(ptr));
 
         // the following cast is sound because Slimmable<T> is repr(C) so a
-        // pointer to it can be cast to a pointer to its first field
+        // pointer to it can be cast to a pointer to its anchor
         SlimMut {
-            slim_mut: SlimPtr(NonNull::new(ptr as *mut *mut Slimmable<T>).unwrap()),
+            slim_mut: SlimPtr::new(ptr).unwrap(),
             _phantom: PhantomData,
         }
     }
@@ -528,23 +560,17 @@ impl<T: ?Sized> Deref for SlimMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: self.slim_mut points to a valid exclusively-borrowed
-        // Slimmable<T>
+        // SAFETY: self.slim_mut points to a valid exclusive Slimmable<T>
         &unsafe { self.slim_mut.as_ref() }.value
     }
 }
 
 impl<T: ?Sized> DerefMut for SlimMut<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: self.slim_mut points to a valid exclusively-borrowed
-        // Slimmable<T>
+        // SAFETY: self.slim_mut points to a valid exclusive Slimmable<T>
         &mut unsafe { self.slim_mut.as_mut() }.value
     }
 }
-
-// SAFETY: same bounds as &mut T
-unsafe impl<T: ?Sized + Send> Send for SlimMut<'_, T> {}
-unsafe impl<T: ?Sized + Sync> Sync for SlimMut<'_, T> {}
 
 #[cfg(test)]
 mod test {
