@@ -315,7 +315,7 @@ impl<T: ?Sized> SlimBox<T> {
 
         // we manually build the Layout for a Slimmable<T> that can hold the
         // currently boxed value
-        let slimmable_layout = Layout::new::<*mut Slimmable<T>>();
+        let slimmable_layout = Layout::new::<SlimAnchor<T>>();
         let value_layout = Layout::for_value(boxed.deref());
         let (slimmable_layout, value_offset) = slimmable_layout.extend(value_layout).unwrap();
         let slimmable_layout = slimmable_layout.pad_to_align();
