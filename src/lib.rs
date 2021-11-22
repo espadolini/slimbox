@@ -213,7 +213,12 @@ impl<T: ?Sized> SlimAnchor<T> {
             core::ptr::from_raw_parts_mut(ptr.cast(), self.0)
         }
 
-        #[cfg(not(feature = "nightly"))]
+        #[cfg(all(not(feature = "nightly"), feature = "unsafe_stable"))]
+        {
+            set_ptr_value(self.0, ptr.cast())
+        }
+
+        #[cfg(not(any(feature = "nightly", feature = "unsafe_stable")))]
         {
             let _ = ptr;
             self.0
@@ -257,6 +262,40 @@ impl<T: ?Sized> SlimPtr<T> {
     unsafe fn get_ptr(self) -> *mut Slimmable<T> {
         let ptr = self.0.as_ptr();
         (*ptr).get_ptr(ptr)
+    }
+
+    /// Reborrows the `SlimPtr` for reading.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be valid for reading.
+    unsafe fn reborrow(self) -> SlimPtr<T> {
+        #[cfg(any(feature = "nightly", feature = "unsafe_stable"))]
+        {
+            SlimPtr::new(&*self.get_ptr() as *const Slimmable<T> as *mut Slimmable<T>).unwrap()
+        }
+
+        #[cfg(not(any(feature = "nightly", feature = "unsafe_stable")))]
+        {
+            self
+        }
+    }
+
+    /// Reborrows the `SlimPtr` for writing.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be valid for writing.
+    unsafe fn reborrow_mut(self) -> SlimPtr<T> {
+        #[cfg(any(feature = "nightly", feature = "unsafe_stable"))]
+        {
+            SlimPtr::new(&mut *self.get_ptr() as *mut Slimmable<T>).unwrap()
+        }
+
+        #[cfg(not(any(feature = "nightly", feature = "unsafe_stable")))]
+        {
+            self
+        }
     }
 }
 
@@ -392,7 +431,7 @@ impl<T: ?Sized> SlimBox<T> {
     /// Returns a [`SlimRef`] that borrows from this `SlimBox`.
     pub fn slimborrow(&self) -> SlimRef<'_, T> {
         SlimRef {
-            slim_ref: self.slim_box,
+            slim_ref: unsafe { self.slim_box.reborrow() },
             _phantom: PhantomData,
         }
     }
@@ -400,7 +439,7 @@ impl<T: ?Sized> SlimBox<T> {
     /// Returns a [`SlimMut`] that borrows from this `SlimBox`.
     pub fn slimborrow_mut(&mut self) -> SlimMut<'_, T> {
         SlimMut {
-            slim_mut: self.slim_box,
+            slim_mut: unsafe { self.slim_box.reborrow_mut() },
             _phantom: PhantomData,
         }
     }
@@ -546,7 +585,7 @@ impl<T: ?Sized> SlimMut<'_, T> {
     /// Returns a [`SlimRef`] that reborrows from the current `SlimMut`.
     pub fn reborrow(&self) -> SlimRef<'_, T> {
         SlimRef {
-            slim_ref: self.slim_mut,
+            slim_ref: unsafe { self.slim_mut.reborrow() },
             _phantom: PhantomData,
         }
     }
@@ -554,7 +593,7 @@ impl<T: ?Sized> SlimMut<'_, T> {
     /// Returns a new `SlimMut` that reborrows from the current one.
     pub fn reborrow_mut(&mut self) -> SlimMut<'_, T> {
         SlimMut {
-            slim_mut: self.slim_mut,
+            slim_mut: unsafe { self.slim_mut.reborrow_mut() },
             _phantom: PhantomData,
         }
     }
