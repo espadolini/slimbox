@@ -303,6 +303,11 @@ impl<T: ?Sized> SlimBox<T> {
 
     /// Moves the value contained in `boxed` into a `SlimBox`. This function
     /// will likely make a new allocation.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if prepending the required metadata to the allocation would
+    /// overflow the layout.
     #[cfg(any(feature = "nightly", feature = "unsafe_stable", doc))]
     #[cfg_attr(doc, doc(cfg(any(feature = "nightly", feature = "unsafe_stable"))))]
     pub fn from_box(boxed: Box<T>) -> SlimBox<T> {
