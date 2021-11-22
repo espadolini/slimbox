@@ -302,7 +302,7 @@ impl<T: ?Sized> SlimBox<T> {
     }
 
     /// Moves the value contained in `boxed` into a `SlimBox`. This function
-    /// makes a new allocation.
+    /// will likely make a new allocation.
     #[cfg(any(feature = "nightly", feature = "unsafe_stable", doc))]
     #[cfg_attr(doc, doc(cfg(any(feature = "nightly", feature = "unsafe_stable"))))]
     pub fn from_box(boxed: Box<T>) -> SlimBox<T> {
@@ -310,31 +310,40 @@ impl<T: ?Sized> SlimBox<T> {
 
         // we manually build the Layout for a Slimmable<T> that can hold the
         // currently boxed value
-        let inner_layout = Layout::new::<*mut Slimmable<T>>();
+        let slimmable_layout = Layout::new::<*mut Slimmable<T>>();
         let value_layout = Layout::for_value(boxed.deref());
-        let (inner_layout, value_offset) = inner_layout.extend(value_layout).unwrap();
-        let inner_layout = inner_layout.pad_to_align();
+        let (slimmable_layout, value_offset) = slimmable_layout.extend(value_layout).unwrap();
+        let slimmable_layout = slimmable_layout.pad_to_align();
 
-        let inner_ptr = alloc_extended(inner_layout);
+        if slimmable_layout == value_layout && value_offset == 0 {
+            let ptr = Box::into_raw(boxed) as *mut Slimmable<T>;
+            // SAFETY: SlimAnchor<T> is a MaybeUninit ZST, it's sound to just
+            // cast the Box<T> into a Box<Slimmable<T>>
+            let boxed = unsafe { Box::from_raw(ptr) };
+            return SlimBox::from_boxed_slimmable(boxed);
+        }
+
+        let slimmable_ptr = alloc_extended(slimmable_layout);
         let value_ptr = Box::into_raw(boxed);
 
         // SAFETY: we're initializing the newly-allocated Slimmable<T> that
-        // lives at inner_ptr, moving the T from the allocation at value_ptr
+        // lives at slimmable_ptr, moving the T from the allocation at value_ptr
+        // (the anchor field is MaybeUninit so we don't have to touch it)
         unsafe {
             core::ptr::copy_nonoverlapping(
                 value_ptr as *const u8,
-                inner_ptr.add(value_offset),
+                slimmable_ptr.add(value_offset),
                 value_layout.size(),
             );
             dealloc_extended(value_ptr as *mut u8, value_layout);
         }
 
-        // copy the T metadata from the boxed pointer
-        let inner_ptr = set_ptr_value(value_ptr, inner_ptr) as *mut Slimmable<T>;
+        // copy the T metadata from the pointer to T
+        let slimmable_ptr = set_ptr_value(value_ptr, slimmable_ptr) as *mut Slimmable<T>;
 
-        // SAFETY: inner_ptr points to a valid, initialized, uniquely owned
-        // Inner<T>
-        SlimBox::from_boxed_slimmable(unsafe { Box::from_raw(inner_ptr) })
+        // SAFETY: slimmable_ptr points to a globally-allocated, owned,
+        // initialized and valid Slimmable<T>, so we can pass it to a Box
+        SlimBox::from_boxed_slimmable(unsafe { Box::from_raw(slimmable_ptr) })
     }
 
     /// Returns a `*mut c_void` pointing to the internal [`Slimmable<T>`], which
