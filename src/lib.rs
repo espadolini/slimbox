@@ -1,9 +1,10 @@
 //! [`SlimBox`] is a thin pointer type for heap allocation; by storing metadata
-//! (currently, a full pointer) together with the value in the same allocation,
-//! it allows you to box a [DST] (i.e. a slice or a trait object) while only
-//! using one machine word's worth of space. Additionally, the [`SlimRef`] and
-//! [`SlimMut`] types provide the equivalent of shared and exclusive references
-//! to the contents of a `SlimBox`, while also being the size of a thin pointer.
+//! (either a full pointer, or just the metadata when the `nightly` feature is
+//! enabled) together with the value in the same allocation, it allows you to
+//! box a [DST] (i.e. a slice or a trait object) while only using one machine
+//! word's worth of space. Additionally, the [`SlimRef`] and [`SlimMut`] types
+//! provide the equivalent of shared and exclusive references to the contents of
+//! a `SlimBox`, while also being the size of a thin pointer.
 //!
 //! A convenient [`slimbox_unsize!`] macro is provided, to construct a
 //! `SlimBox<T>` from a value of type `S` that can be [unsized] to `T`. By
