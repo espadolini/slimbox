@@ -254,31 +254,9 @@ impl<T: ?Sized> SlimPtr<T> {
     /// # Safety
     ///
     /// `self` must point to a valid `Slimmable<T>`.
-    unsafe fn as_ptr(self) -> *mut Slimmable<T> {
+    unsafe fn get_ptr(self) -> *mut Slimmable<T> {
         let ptr = self.0.as_ptr();
         (*ptr).get_ptr(ptr)
-    }
-
-    /// Reconstructs a shared reference to the pointed [`Slimmable<T>`], with
-    /// arbitrary lifetime.
-    ///
-    /// # Safety
-    ///
-    /// `self` must point to a valid `Slimmable<T>` and it must be legal to
-    /// build a shared reference to it.
-    unsafe fn as_ref<'a>(self) -> &'a Slimmable<T> {
-        &*self.as_ptr()
-    }
-
-    /// Reconstructs an exclusive reference to the pointed [`Slimmable<T>`],
-    /// with arbitrary lifetime.
-    ///
-    /// # Safety
-    ///
-    /// `self` must point to a valid `Slimmable<T>` and it must be legal to
-    /// build an exclusive reference to it.
-    unsafe fn as_mut<'a>(self) -> &'a mut Slimmable<T> {
-        &mut *self.as_ptr()
     }
 }
 
@@ -314,7 +292,7 @@ impl<T: ?Sized> SlimBox<T> {
     /// Repacks a `SlimBox<T>` into a `Box<Slimmable<T>>`.
     pub fn into_boxed_slimmable(self) -> Box<Slimmable<T>> {
         // SAFETY: self.slim_box points to a valid Slimmable<T>
-        let ptr = unsafe { self.slim_box.as_ptr() };
+        let ptr = unsafe { self.slim_box.get_ptr() };
         mem::forget(self);
         // SAFETY: we were originally a Box<Slimmable<T>>
         unsafe { Box::from_raw(ptr) }
@@ -444,7 +422,7 @@ macro_rules! slimbox_unsize {
 impl<T: ?Sized> Drop for SlimBox<T> {
     fn drop(&mut self) {
         // SAFETY: self.slim_box points to a valid Slimmable<T>
-        let ptr = unsafe { self.slim_box.as_ptr() };
+        let ptr = unsafe { self.slim_box.get_ptr() };
         // SAFETY: we were originally a Box<Slimmable<T>>
         unsafe { Box::from_raw(ptr) };
     }
@@ -455,14 +433,14 @@ impl<T: ?Sized> Deref for SlimBox<T> {
 
     fn deref(&self) -> &T {
         // SAFETY: self.slim_box points to a valid owned Slimmable<T>
-        &unsafe { self.slim_box.as_ref() }.value
+        unsafe { &(*self.slim_box.get_ptr()).value }
     }
 }
 
 impl<T: ?Sized> DerefMut for SlimBox<T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: self.slim_box points to a valid owned Slimmable<T>
-        &mut unsafe { self.slim_box.as_mut() }.value
+        unsafe { &mut (*self.slim_box.get_ptr()).value }
     }
 }
 
@@ -524,7 +502,7 @@ impl<T: ?Sized> Deref for SlimRef<'_, T> {
 
     fn deref(&self) -> &T {
         // SAFETY: self.slim_ref points to a valid shared Slimmable<T>
-        &unsafe { self.slim_ref.as_ref() }.value
+        unsafe { &(*self.slim_ref.get_ptr()).value }
     }
 }
 
@@ -602,14 +580,14 @@ impl<T: ?Sized> Deref for SlimMut<'_, T> {
 
     fn deref(&self) -> &T {
         // SAFETY: self.slim_mut points to a valid exclusive Slimmable<T>
-        &unsafe { self.slim_mut.as_ref() }.value
+        unsafe { &(*self.slim_mut.get_ptr()).value }
     }
 }
 
 impl<T: ?Sized> DerefMut for SlimMut<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: self.slim_mut points to a valid exclusive Slimmable<T>
-        &mut unsafe { self.slim_mut.as_mut() }.value
+        unsafe { &mut (*self.slim_mut.get_ptr()).value }
     }
 }
 
