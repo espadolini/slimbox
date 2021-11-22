@@ -61,7 +61,7 @@
 //! [unsized]: core::marker::Unsize
 
 #![warn(missing_docs)]
-#![cfg_attr(feature = "nightly", feature(set_ptr_value))]
+#![cfg_attr(feature = "nightly", feature(ptr_metadata, set_ptr_value))]
 #![cfg_attr(doc, feature(doc_cfg))]
 #![no_std]
 extern crate alloc;
@@ -181,7 +181,10 @@ impl<T: ?Sized, S> Slimmable<T, S> {
 
 /// The first field of a [`Slimmable`], containing enough information to be able
 /// to reconstruct a `*mut Slimmable<T>` from a `*mut SlimAnchor<T>`.
-struct SlimAnchor<T: ?Sized>(*mut Slimmable<T>);
+struct SlimAnchor<T: ?Sized>(
+    #[cfg(feature = "nightly")] <Slimmable<T> as core::ptr::Pointee>::Metadata,
+    #[cfg(not(feature = "nightly"))] *mut Slimmable<T>,
+);
 impl_unbound_copy! { SlimAnchor<T> }
 
 // SAFETY: our usage of the anchor will depend on wrapper types' bounds anyway
@@ -191,7 +194,29 @@ unsafe impl<T: ?Sized> Sync for SlimAnchor<T> {}
 impl<T: ?Sized> SlimAnchor<T> {
     /// Extracts a `SlimAnchor` from `ptr`
     fn new(ptr: *mut Slimmable<T>) -> SlimAnchor<T> {
-        SlimAnchor(ptr)
+        #[cfg(feature = "nightly")]
+        {
+            SlimAnchor(core::ptr::metadata(ptr))
+        }
+
+        #[cfg(not(feature = "nightly"))]
+        {
+            SlimAnchor(ptr)
+        }
+    }
+
+    /// Rebuilds a `*mut Slimmable<T>` given `self` and a `ptr` (pointing to `self`).
+    fn get_ptr(self, ptr: *mut SlimAnchor<T>) -> *mut Slimmable<T> {
+        #[cfg(feature = "nightly")]
+        {
+            core::ptr::from_raw_parts_mut(ptr.cast(), self.0)
+        }
+
+        #[cfg(not(feature = "nightly"))]
+        {
+            let _ = ptr;
+            self.0
+        }
     }
 }
 
@@ -229,7 +254,8 @@ impl<T: ?Sized> SlimPtr<T> {
     ///
     /// `self` must point to a valid `Slimmable<T>`.
     unsafe fn as_ptr(self) -> *mut Slimmable<T> {
-        (*self.0.as_ptr()).0
+        let ptr = self.0.as_ptr();
+        (*ptr).get_ptr(ptr)
     }
 
     /// Reconstructs a shared reference to the pointed [`Slimmable<T>`], with
