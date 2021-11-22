@@ -140,6 +140,19 @@ unsafe fn dealloc_extended(ptr: *mut u8, layout: core::alloc::Layout) {
     }
 }
 
+/// impls Copy and Clone for a type without putting bounds on the generic type
+/// parameter assumed to be `T: ?Sized`
+macro_rules! impl_unbound_copy {
+    ($T:ty) => {
+        impl<T: ?Sized> Copy for $T {}
+        impl<T: ?Sized> Clone for $T {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
+    };
+}
+
 /// A container for a potentially wide pointer to the unsized container, and a
 /// value. The internal container type used by [`SlimBox`].
 #[repr(C)]
@@ -170,13 +183,7 @@ impl<T: ?Sized, S> Slimmable<T, S> {
 #[repr(transparent)]
 struct SlimPtr<T: ?Sized>(NonNull<*mut Slimmable<T>>);
 
-// manual impl to avoid bounds on T
-impl<T: ?Sized> Copy for SlimPtr<T> {}
-impl<T: ?Sized> Clone for SlimPtr<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
+impl_unbound_copy! { SlimPtr<T> }
 
 impl<T: ?Sized> SlimPtr<T> {
     /// Reconstructs a regular (potentially wide) pointer to the pointed
@@ -395,13 +402,7 @@ pub struct SlimRef<'a, T: ?Sized> {
     _phantom: PhantomData<&'a Slimmable<T>>,
 }
 
-// manual impl to avoid bounds on T
-impl<T: ?Sized> Copy for SlimRef<'_, T> {}
-impl<T: ?Sized> Clone for SlimRef<'_, T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
+impl_unbound_copy! { SlimRef<'_, T> }
 
 impl<T: ?Sized> SlimRef<'_, T> {
     /// Returns a `*const c_void` pointing to the internal [`Slimmable<T>`],
